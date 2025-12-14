@@ -1,10 +1,29 @@
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 from camel.agents import ChatAgent
 from camel.messages import BaseMessage
 from camel.storages import Neo4jGraph
 
+SINGLE_VALUED_RELATIONS: Set[str] = {
+    "LIVES_IN",
+    "WORKS_AT",
+    "STUDIES_AT",
+    "HAS_PHONE_NUMBER",
+    "HAS_EMAIL",
+    "HAS_BIRTHDATE",
+    "CURRENT_ROLE",
+    "CURRENT_JOB",
+}
+
+
+def is_single_valued(rel_type: str) -> bool:
+    return (rel_type or "").upper() in SINGLE_VALUED_RELATIONS
+
+
 def detect_conflicts(neo: Neo4jGraph, subj: str, rel_type: str, obj: str) -> List[Dict]:
+    if not is_single_valued(rel_type):
+        return []
+
     triplets = neo.get_triplet()
     conflicts = []
 
@@ -95,7 +114,7 @@ def apply_conflict_resolution(neo: Neo4jGraph, choice: str, conflict: Dict) -> N
     old_list = conflict["old"]
 
     if choice == "A":
-        print("[KG] Applying resolution A: mark old facts as past, new fact as current.")
+        print("Applying resolution A: mark old facts as past, new fact as current.")
         for t in old_list:
             o = t.get("obj")
             ts = t.get("timestamp")
@@ -110,11 +129,11 @@ def apply_conflict_resolution(neo: Neo4jGraph, choice: str, conflict: Dict) -> N
         SET r.status = 'current'
         """
         neo.query(cypher_new, {"subj": subj, "obj": new_obj, "ts": new_ts})
-        print("[KG] Conflict resolved as: new fact is current; old facts are past.")
+        print("Conflict resolved: new fact current; old facts past.")
         return
 
     if choice == "B":
-        print("[KG] Applying resolution B: both old and new facts are valid (current).")
+        print("Applying resolution B: keep both as current.")
         for t in old_list:
             o = t.get("obj")
             ts = t.get("timestamp")
@@ -129,15 +148,15 @@ def apply_conflict_resolution(neo: Neo4jGraph, choice: str, conflict: Dict) -> N
         SET r.status = 'current'
         """
         neo.query(cypher_new, {"subj": subj, "obj": new_obj, "ts": new_ts})
-        print("[KG] Conflict resolved as: all facts kept as current.")
+        print("Conflict resolved: all facts kept current.")
         return
 
     if choice == "C":
-        print("[KG] Applying resolution C: delete the new fact, keep old ones unchanged.")
+        print("Applying resolution C: delete the new fact.")
         cypher_del = f"""
         MATCH (a {{id: $subj}})-[r:`{rel}` {{timestamp: $ts}}]->(b {{id: $obj}})
         DELETE r
         """
         neo.query(cypher_del, {"subj": subj, "obj": new_obj, "ts": new_ts})
-        print("[KG] Conflict resolved as: new fact removed; old facts remain.")
+        print("Conflict resolved: new fact removed.")
         return

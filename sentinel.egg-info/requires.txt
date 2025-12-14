@@ -1,0 +1,4 @@
+camel-ai
+unstructured
+neo4j
+python-dotenv

@@ -1,6 +1,9 @@
 from typing import Dict, List
+
 from camel.storages import Neo4jGraph
+
 from .config import load_neo4j_config
+
 
 def connect_neo4j(clear: bool = False) -> Neo4jGraph:
     cfg = load_neo4j_config()
@@ -10,7 +13,7 @@ def connect_neo4j(clear: bool = False) -> Neo4jGraph:
     pwd = cfg["NEO4J_PASSWORD"]
     database = cfg.get("NEO4J_DATABASE", "neo4j")
 
-    print(f"[DEBUG] Connecting to Neo4j URI: {uri}, DB: {database}, user: {user}")
+    print(f"[INFO] Connecting to Neo4j URI: {uri}, DB: {database}, user: {user}")
 
     neo = Neo4jGraph(
         url=uri,
@@ -77,3 +80,20 @@ def remove_knowledge(neo: Neo4jGraph, pattern: str) -> None:
         DELETE rel
         """
         neo.query(cypher, {"subj": s, "obj": o, "ts": ts})
+
+
+def triplet_exists(neo: Neo4jGraph, subj: str, rel: str, obj: str) -> bool:
+    """
+    Check whether (subj)-[rel]->(obj) exists, without triggering Neo4j warnings
+    for unseen relationship types.
+    """
+    cypher = """
+    MATCH (a {id: $subj})-[r]->(b {id: $obj})
+    WHERE type(r) = $rel
+    RETURN count(r) AS c
+    """
+    rows = neo.query(cypher, {"subj": subj, "obj": obj, "rel": rel}) or []
+    try:
+        return (rows[0].get("c", 0) if rows else 0) > 0
+    except Exception:
+        return False

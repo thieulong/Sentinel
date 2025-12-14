@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: sentinel
+Version: 0.1.0
+Summary: An LLM-powered conversational agent with persistent, timestamped memory powered by a knowledge graph.
+Author: Paul
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: camel-ai
+Requires-Dist: unstructured
+Requires-Dist: neo4j
+Requires-Dist: python-dotenv
+
+# Sentinel
+Sentinel is an LLM-powered conversational agent with long-term memory built on a knowledge graph. It listens to conversations, extracts important facts, plans, and events, stores them with timestamps, and uses this structured memory to recall past information, track commitments, and provide reminders or follow-ups over time.
