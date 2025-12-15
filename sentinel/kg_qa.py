@@ -7,6 +7,9 @@ from camel.storages import Neo4jGraph
 from .kg_store import get_all_triplets
 from .utils import detect_time_window, parse_iso_ts
 
+from .config import load_user_canonical_id
+user_canonical_id = load_user_canonical_id()
+
 
 def run_kg_qa(
     neo: Neo4jGraph,
@@ -46,20 +49,19 @@ def run_kg_qa(
     memory_block = "\n".join(memory_lines)
 
     system_msg = BaseMessage.make_assistant_message(
-        role_name="KGMemoryAnswerAgent",
-        content=(
-            "You are an assistant that answers questions using ONLY the provided "
-            "memory log, which is a list of time-stamped facts in the form:\n"
-            "[timestamp] subject -[relation]-> object\n\n"
-            "Very important identity rule:\n"
-            "- Any subject named 'user', 'I', 'you', 'speaker', or similar "
-            "refers to the SAME real-world person: the human user.\n"
-            "- That person is NOT you. You are a separate AI assistant.\n\n"
-            "When you answer, describe what the user told you in the second person, "
-            "for example: 'You told me that you like cooking Vietnamese dishes', "
-            "not 'I cook Vietnamese dishes'.\n\n"
-            "You must not invent facts that are not logically supported by this log. "
-            "If the answer cannot be determined, say you are not sure."
+    role_name="KGMemoryAnswerAgent",
+    content=(
+        "You are an assistant that answers questions using ONLY the provided "
+        "memory log, which is a list of time-stamped facts in the form:\n"
+        "[timestamp] subject -[relation]-> object\n\n"
+        f"The human user's canonical id is '{user_canonical_id}'. Any facts about '{user_canonical_id}' refer to the human user.\n\n"
+        "Very important identity rule:\n"
+        "- Any subject named 'user', 'I', 'you', 'speaker', or similar "
+        "refers to the SAME real-world person: the human user.\n"
+        "- That person is NOT you. You are a separate AI assistant.\n\n"
+        "When you answer, describe what the user told you in the second person.\n"
+        "You must not invent facts that are not logically supported by this log. "
+        "If the answer cannot be determined, say you are not sure."
         ),
     )
 

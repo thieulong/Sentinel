@@ -1,8 +1,7 @@
 import json
 import re
-import hashlib
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from camel.agents import ChatAgent
 from camel.messages import BaseMessage
@@ -11,163 +10,66 @@ from .extract import Triplet, norm, normalize_relation
 
 
 ENRICHER_SYSTEM_PROMPT = r"""
-You are "Enricher", a graph architect for a personal knowledge graph.
+You are Enricher, a knowledge-graph structuring agent.
 
-Input:
-- A "clean_text" summary (already filtered by Curator).
-- A list of Curator "candidates" in the form:
-  {"subj":"USER","rel":"RELATION","obj":"OBJECT","confidence":0..1}
+INPUT:
+- clean_text: a cleaned factual summary
+- candidates: list of extracted factual relations
 
-Goal:
-Transform flat candidates into a better-structured graph by:
-1) Reifying composite facts into entity-centric structure.
-   Example: instead of USER -> MEETING_TIME -> today 4pm,
-   create an EVENT node and attach time to that EVENT node.
+GOAL:
+Restructure facts into better graph form WITHOUT inventing new facts.
 
-2) Splitting combined strings into smaller nodes when explicitly present.
-   Example: "Melbourne, Australia" may be split into "Melbourne" and "Australia" and add:
-     Melbourne -[LOCATED_IN]-> Australia
-   This is allowed because the country is explicitly present in the same text.
+STRICT RULES:
+- DO NOT invent information.
+- DO NOT use web search.
+- DO NOT guess missing links.
+- ONLY reorganize facts explicitly present.
+- If unsure, keep the structure flat.
 
-3) Creating topical branches.
-   Example: "PhD in AI and multi-agent systems" should become:
-     USER -[HAS_PROGRAM]-> PhD
-     PhD -[HAS_FIELD]-> AI
-     PhD -[HAS_FIELD]-> multi-agent systems
-   Only do this when the text explicitly mentions these components.
+IMPORTANT RULES:
+- USER always refers to the same real person.
+- DO NOT create abstract placeholder entities.
+- For NAME and AGE, keep literal values (e.g., "Paul", "24").
+- If object is "City, Country", you MAY also add City LOCATED_IN Country.
+- DO NOT merge unrelated concepts.
 
-CRITICAL RULES:
-- Do NOT add new facts that are not supported by the inputs.
-- Do NOT use web search.
-- Common-sense is allowed only for restructuring, not for inventing new entities.
-- If something is ambiguous, keep the flat version rather than guessing.
-- Output JSON only, no markdown.
+OUTPUT:
+Return JSON ONLY in this schema:
 
-OUTPUT SCHEMA (strict JSON object):
 {
-  "entities": [
-    {
-      "key": "string",               // stable key you create, like "event_1", "program_1"
-      "label": "string",             // human label like "meeting", "PhD"
-      "type": "EVENT|TASK|PROGRAM|PLACE|CONCEPT|OTHER",
-      "time_text": "string|null",    // optional, like "today 4PM"
-      "details": {"k":"v"}           // optional dictionary
-    }
-  ],
   "relations": [
     {
-      "subj": "string",
+      "subj": "USER|string",
       "rel": "string",
       "obj": "string",
       "confidence": 0.0-1.0,
       "derived": true
     }
   ],
-  "notes": ["string", ...]
+  "notes": ["string"]
 }
 
-IDENTITY:
-- "USER" refers to the human user (not the assistant).
-
-RELATION VOCABULARY (prefer these):
-- HAS_EVENT, HAS_TASK, HAS_PROGRAM
-- AT_TIME, ABOUT, LOCATED_IN
-- HAS_FIELD, HAS_TOPIC
-- NAME, AGE, FROM, HOMETOWN, LIVES_IN (keep if already correct)
-
-EXAMPLES:
-
-Example A (event structuring)
-clean_text:
-"User has a meeting today at 4PM and wants a reminder about cooking."
-candidates:
-[
- {"subj":"USER","rel":"HAS_MEETING","obj":"meeting","confidence":0.85},
- {"subj":"USER","rel":"MEETING_TIME","obj":"today 4PM","confidence":0.90},
- {"subj":"USER","rel":"MEETING_TOPIC","obj":"discuss what to cook for tonight","confidence":0.80}
-]
-Good output:
-{
- "entities":[{"key":"event_1","label":"meeting","type":"EVENT","time_text":"today 4PM","details":{"topic":"discuss what to cook for tonight"}}],
- "relations":[
-   {"subj":"USER","rel":"HAS_EVENT","obj":"event_1","confidence":0.90,"derived":true},
-   {"subj":"event_1","rel":"AT_TIME","obj":"today 4PM","confidence":0.90,"derived":true},
-   {"subj":"event_1","rel":"ABOUT","obj":"discuss what to cook for tonight","confidence":0.80,"derived":true}
- ],
- "notes":["Reified meeting into an EVENT node; attached time/topic to the event."]
-}
-
-Example B (place split)
-clean_text:
-"User lives in Melbourne, Australia."
-candidates:
-[
- {"subj":"USER","rel":"LIVES_IN","obj":"Melbourne, Australia","confidence":0.90}
-]
-Good output:
-{
- "entities":[
-   {"key":"place_1","label":"Melbourne","type":"PLACE","time_text":null,"details":{}},
-   {"key":"place_2","label":"Australia","type":"PLACE","time_text":null,"details":{}}
- ],
- "relations":[
-   {"subj":"USER","rel":"LIVES_IN","obj":"place_1","confidence":0.90,"derived":true},
-   {"subj":"place_1","rel":"LOCATED_IN","obj":"place_2","confidence":0.90,"derived":true}
- ],
- "notes":["Split explicit 'Melbourne, Australia' into two places and added containment."]
-}
-
-Example C (program fields)
-clean_text:
-"User is doing a PhD in AI and multi-agent systems."
-candidates:
-[
- {"subj":"USER","rel":"STUDIES_AT","obj":"PhD in AI and multi-agent systems","confidence":0.90}
-]
-Good output:
-{
- "entities":[
-   {"key":"program_1","label":"PhD","type":"PROGRAM","time_text":null,"details":{}},
-   {"key":"concept_1","label":"AI","type":"CONCEPT","time_text":null,"details":{}},
-   {"key":"concept_2","label":"multi-agent systems","type":"CONCEPT","time_text":null,"details":{}}
- ],
- "relations":[
-   {"subj":"USER","rel":"HAS_PROGRAM","obj":"program_1","confidence":0.90,"derived":true},
-   {"subj":"program_1","rel":"HAS_FIELD","obj":"concept_1","confidence":0.85,"derived":true},
-   {"subj":"program_1","rel":"HAS_FIELD","obj":"concept_2","confidence":0.85,"derived":true}
- ],
- "notes":["Extracted PROGRAM and fields from explicit text."]
-}
-
-TASK:
-Given clean_text and candidates, output JSON with a well-structured graph.
-If you cannot improve structure, return empty entities and just rewrite relations that mirror candidates.
+Preferred relations:
+NAME, AGE, FROM, HOMETOWN, LIVES_IN, STUDIES_AT, WORKS_AS,
+DEGREE, PROGRAM,
+RESEARCH_AREA, HAS_FIELD, HAS_BACKGROUND, LOCATED_IN
 """
 
 
 @dataclass(frozen=True)
 class EnricherResult:
-    entities: List[Dict[str, Any]]
     relations: List[Dict[str, Any]]
     notes: List[str]
 
 
-def _extract_json_object(text: str) -> Optional[str]:
+def _extract_json(text: str) -> Optional[Dict[str, Any]]:
     if not text:
         return None
-    t = text.strip()
-    if t.startswith("{") and t.endswith("}"):
-        return t
     m = re.search(r"\{.*\}", text, flags=re.DOTALL)
-    return m.group(0).strip() if m else None
-
-
-def _safe_json_parse(text: str) -> Optional[Dict[str, Any]]:
-    js = _extract_json_object(text)
-    if not js:
+    if not m:
         return None
     try:
-        obj = json.loads(js)
+        obj = json.loads(m.group(0))
         return obj if isinstance(obj, dict) else None
     except Exception:
         return None
@@ -181,67 +83,110 @@ def make_enricher_agent(model) -> ChatAgent:
     return ChatAgent(system_message=system_msg, model=model)
 
 
-def run_enricher(enricher_agent: ChatAgent, clean_text: str, candidates: List[Dict[str, Any]]) -> EnricherResult:
+def run_enricher(
+    agent: ChatAgent,
+    clean_text: str,
+    candidates: List[Dict[str, Any]],
+) -> EnricherResult:
     payload = {
         "clean_text": clean_text,
         "candidates": candidates or [],
     }
 
     prompt = (
-        "Input JSON:\n"
+        "Input:\n"
         f"{json.dumps(payload, ensure_ascii=False)}\n\n"
-        "Output JSON only in the required schema."
+        "Return JSON in the required schema only."
     )
 
-    resp = enricher_agent.step(prompt)
+    resp = agent.step(prompt)
     raw = resp.msg.content if resp and resp.msg else ""
-    obj = _safe_json_parse(raw)
+    data = _extract_json(raw)
 
-    if not obj:
-        return EnricherResult(entities=[], relations=[], notes=["Enricher output was not valid JSON."])
+    if not data:
+        return EnricherResult(relations=[], notes=["Invalid JSON from Enricher."])
 
-    entities = obj.get("entities", [])
-    relations = obj.get("relations", [])
-    notes = obj.get("notes", [])
+    relations = data.get("relations", []) or []
+    notes = data.get("notes", []) or []
 
-    if not isinstance(entities, list):
-        entities = []
-    if not isinstance(relations, list):
-        relations = []
-    if not isinstance(notes, list):
-        notes = []
-
-    # Normalize relations to a safe shape
-    norm_relations: List[Dict[str, Any]] = []
+    clean_relations: List[Dict[str, Any]] = []
     for r in relations:
         if not isinstance(r, dict):
             continue
         subj = str(r.get("subj", "")).strip()
         rel = str(r.get("rel", "")).strip()
-        objv = str(r.get("obj", "")).strip()
-        if not subj or not rel or not objv:
+        obj = str(r.get("obj", "")).strip()
+        if not subj or not rel or not obj:
             continue
         try:
             conf = float(r.get("confidence", 0.8))
         except Exception:
             conf = 0.8
-        conf = max(0.0, min(conf, 1.0))
-        derived = bool(r.get("derived", True))
-        norm_relations.append({"subj": subj, "rel": rel, "obj": objv, "confidence": conf, "derived": derived})
+        clean_relations.append(
+            {
+                "subj": subj,
+                "rel": rel,
+                "obj": obj,
+                "confidence": max(0.0, min(conf, 1.0)),
+                "derived": bool(r.get("derived", True)),
+            }
+        )
 
-    norm_notes = [str(n) for n in notes if str(n).strip()]
-
-    return EnricherResult(entities=entities, relations=norm_relations, notes=norm_notes)
+    return EnricherResult(relations=clean_relations, notes=[str(n) for n in notes])
 
 
-def _stable_entity_id(entity_type: str, label: str) -> str:
+# ---------------------------
+# Triplet building fixes
+# ---------------------------
+
+_PLACE_RELS = {"LIVES_IN", "FROM", "HOMETOWN", "LOCATED_IN"}
+_PROGRAM_HINT_RELS = {"DEGREE", "PROGRAM"}  # from Curator/Enricher
+_FIELD_RELS = {"RESEARCH_AREA", "HAS_FIELD"}  # we normalize under program when available
+
+
+def _split_city_country(text: str) -> Optional[Tuple[str, str]]:
+    # Conservative: split only once at the first comma
+    if not text or "," not in text:
+        return None
+    left, right = [p.strip() for p in text.split(",", 1)]
+    if not left or not right:
+        return None
+    return left, right
+
+
+def _split_field_list(text: str) -> List[str]:
     """
-    Create a stable-ish id for an entity based on type+label.
-    Used to map Enricher keys to Neo4j-safe ids.
+    Split a field list like:
+      "LLMs, multi-agent systems, and knowledge graph"
+    into ["LLMs", "multi-agent systems", "knowledge graph"].
+    Conservative: only splits on commas and ' and '.
     """
-    base = f"{entity_type}:{label}".strip().lower()
-    h = hashlib.sha1(base.encode("utf-8")).hexdigest()[:10]
-    return norm(f"{entity_type.lower()}_{label}_{h}")
+    t = (text or "").strip()
+    if not t:
+        return []
+    t = t.replace(" & ", " and ")
+    t = t.replace(", and ", ", ")
+    parts = []
+    for chunk in t.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        # Further split "A and B" if present
+        if " and " in chunk:
+            subparts = [p.strip() for p in chunk.split(" and ") if p.strip()]
+            parts.extend(subparts)
+        else:
+            parts.append(chunk)
+    # Dedup preserve order
+    seen = set()
+    out = []
+    for p in parts:
+        key = p.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return out
 
 
 def build_triplets_from_enricher(
@@ -249,53 +194,104 @@ def build_triplets_from_enricher(
     user_canonical_id: str,
 ) -> List[Triplet]:
     """
-    Convert Enricher entities/relations into Triplet objects.
-
-    We map:
-    - subject/object "USER" -> user_canonical_id
-    - entity keys like "event_1" -> stable node id derived from entity type+label
+    Convert Enricher relations into Triplets with:
+    - Place normalization: USER->City plus City LOCATED_IN Country (no City__Country nodes)
+    - Program normalization: USER->HAS_PROGRAM->Program and Program->HAS_FIELD->Fields
+    - Prevent accidental comma-splitting for non-place relations
     """
-    key_to_node: Dict[str, str] = {}
+    user_node = norm(user_canonical_id)
 
-    # Map entity keys to stable ids
-    for e in enricher.entities:
-        if not isinstance(e, dict):
-            continue
-        key = str(e.get("key", "")).strip()
-        label = str(e.get("label", "")).strip()
-        etype = str(e.get("type", "OTHER")).strip().upper()
-        if not key or not label:
-            continue
-        key_to_node[key] = _stable_entity_id(etype, label)
+    # 1) Read relations and collect program + fields first
+    degree_program: Optional[str] = None
+    collected_fields: List[str] = []
 
-    out: List[Triplet] = []
-
-    def map_node(x: str) -> str:
-        x = x.strip()
-        if x.upper() == "USER":
-            return norm(user_canonical_id)
-        if x in key_to_node:
-            return key_to_node[x]
-        return norm(x)
+    # We also keep “raw triplets” temporarily for relations we will store as-is
+    raw_pairs: List[Tuple[str, str, str]] = []
 
     for r in enricher.relations:
-        subj = map_node(str(r.get("subj", "")))
-        rel = normalize_relation(str(r.get("rel", "RELATED_TO")))
-        objv = map_node(str(r.get("obj", "")))
+        subj_raw = str(r.get("subj", "USER")).strip()
+        rel_raw = str(r.get("rel", "")).strip()
+        obj_raw = str(r.get("obj", "")).strip()
 
-        if not subj or not objv:
-            continue
-        if subj == objv:
+        if not rel_raw or not obj_raw:
             continue
 
-        out.append(Triplet(subj=subj, rel=rel, obj=objv))
+        subj = user_node if subj_raw.upper() == "USER" else norm(subj_raw)
+        rel = normalize_relation(rel_raw)
 
-    # Deduplicate preserve order
+        # Program detection
+        if rel in _PROGRAM_HINT_RELS and subj == user_node:
+            # e.g. DEGREE -> "PhD"
+            degree_program = obj_raw.strip()
+            continue
+
+        # Also detect packed "PhD in X, Y, Z"
+        if rel in _FIELD_RELS and subj == user_node:
+            low = obj_raw.lower()
+            if low.startswith("phd in "):
+                degree_program = "PhD"
+                fields_part = obj_raw[7:].strip()
+                collected_fields.extend(_split_field_list(fields_part))
+                continue
+
+        # Collect research areas as fields (we may attach under program later)
+        if rel in _FIELD_RELS and subj == user_node:
+            collected_fields.append(obj_raw)
+            continue
+
+        # Everything else store later
+        raw_pairs.append((subj, rel, obj_raw))
+
+    # 2) Build final triplets
+    out: List[Triplet] = []
+
+    # 2a) Store place relations with splitting
+    for subj, rel, obj_raw in raw_pairs:
+        if rel in _PLACE_RELS:
+            split = _split_city_country(obj_raw)
+            if split:
+                city, country = split
+                city_id = norm(city)
+                country_id = norm(country)
+
+                # USER -> City (not City__Country)
+                out.append(Triplet(subj=subj, rel=rel, obj=city_id))
+
+                # City -> Country
+                out.append(Triplet(subj=city_id, rel="LOCATED_IN", obj=country_id))
+                continue
+
+        # default: store as-is (no splitting!)
+        out.append(Triplet(subj=subj, rel=rel, obj=norm(obj_raw)))
+
+    # 2b) Program + fields normalization
+    if degree_program:
+        program_node = norm(degree_program)
+        out.append(Triplet(subj=user_node, rel="HAS_PROGRAM", obj=program_node))
+
+        # Attach fields under program
+        for f in _split_field_list(", ".join(collected_fields)) if len(collected_fields) > 1 else collected_fields:
+            f = (f or "").strip()
+            if not f:
+                continue
+            out.append(Triplet(subj=program_node, rel="HAS_FIELD", obj=norm(f)))
+    else:
+        # No program found, keep fields directly under user (still useful)
+        for f in collected_fields:
+            f = (f or "").strip()
+            if not f:
+                continue
+            out.append(Triplet(subj=user_node, rel="RESEARCH_AREA", obj=norm(f)))
+
+    # 3) Deduplicate preserve order and avoid trivial NAME self-loop
     seen = set()
-    deduped = []
+    deduped: List[Triplet] = []
     for t in out:
+        if t.rel == "NAME" and t.subj == t.obj:
+            continue
         if t in seen:
             continue
         seen.add(t)
         deduped.append(t)
+
     return deduped

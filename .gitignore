@@ -3,3 +3,4 @@ sentinel/__pycache__/
 .DS_Store
 .user_profile.json
 .neo4j_config.json
+context_files/

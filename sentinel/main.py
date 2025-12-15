@@ -11,7 +11,7 @@ from .conflicts import (
 )
 from .curator import make_curator_agent, run_curator
 from .enricher import make_enricher_agent, run_enricher, build_triplets_from_enricher
-from .extract import make_timestamp
+from .extract import make_timestamp, Triplet, norm, normalize_relation
 from .kg_store import connect_neo4j, triplet_exists
 from .llm import create_chat_model, create_curator_model, create_enricher_model
 
@@ -48,23 +48,9 @@ def _pretty_print_curator(curator_result):
 
 
 def _pretty_print_enricher(enricher_result):
-    ents = enricher_result.entities or []
-    rels = enricher_result.relations or []
-    notes = enricher_result.notes or []
-
-    if ents:
-        print("[ENRICHER] entities:")
-        for e in ents:
-            key = e.get("key", "")
-            label = e.get("label", "")
-            etype = e.get("type", "")
-            time_text = e.get("time_text", None)
-            if time_text:
-                print(f"  - {key}  ({etype})  {label}   time={time_text}")
-            else:
-                print(f"  - {key}  ({etype})  {label}")
-    else:
-        print("[ENRICHER] entities: (none)")
+    # New EnricherResult has: relations, notes only
+    rels = getattr(enricher_result, "relations", None) or []
+    notes = getattr(enricher_result, "notes", None) or []
 
     if rels:
         print("[ENRICHER] relations:")
@@ -84,7 +70,7 @@ def _pretty_print_enricher(enricher_result):
         print("[ENRICHER] relations: (none)")
 
     if notes:
-        print("[ENRICHER] notes:", "; ".join(notes))
+        print("[ENRICHER] notes:", "; ".join(str(n) for n in notes if str(n).strip()))
     else:
         print("[ENRICHER] notes: (none)")
     print()
@@ -189,7 +175,7 @@ def main():
         if not curator_result.candidates:
             continue
 
-        # 2) Enricher (graph architect)
+        # 2) Enricher
         enricher_result = run_enricher(
             enricher_agent,
             clean_text=curator_result.clean_text,
@@ -200,19 +186,24 @@ def main():
 
         # 3) Convert enriched relations to Triplets and store
         timestamp = make_timestamp()
-        triplets = build_triplets_from_enricher(enricher_result, user_canonical_id=user_canonical_id)
 
-        # Fallback: if Enricher produced nothing, store Curator candidates flat (rare, but safe)
+        # IMPORTANT: call build_triplets_from_enricher with the signature your current enricher.py supports
+        triplets = build_triplets_from_enricher(
+            enricher_result,
+            user_canonical_id=user_canonical_id,
+        )
+
+        # Fallback: if Enricher produced nothing, store Curator candidates flat
         if not triplets:
-            # Minimal fallback: store only the original Curator relations
             for c in curator_result.candidates:
-                subj = user_canonical_id if str(c.get("subj", "USER")).upper() == "USER" else str(c.get("subj", "")).strip()
-                rel = str(c.get("rel", "FACT")).strip()
-                obj = str(c.get("obj", "")).strip()
-                if not subj or not obj:
+                subj_raw = str(c.get("subj", "USER")).strip()
+                rel_raw = str(c.get("rel", "FACT")).strip()
+                obj_raw = str(c.get("obj", "")).strip()
+                if not obj_raw:
                     continue
-                from .extract import Triplet, norm, normalize_relation
-                t = Triplet(subj=norm(subj), rel=normalize_relation(rel), obj=norm(obj))
+
+                subj = user_canonical_id if subj_raw.upper() == "USER" else subj_raw
+                t = Triplet(subj=norm(subj), rel=normalize_relation(rel_raw), obj=norm(obj_raw))
                 triplets.append(t)
 
         for t in triplets:
